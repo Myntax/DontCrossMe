@@ -1,0 +1,35 @@
+# Self-host DontCrossMe with one command:  docker compose up --build
+#
+# Default: SQLite persisted to a named volume (great for a single society).
+# To run on Postgres instead, uncomment the `db` service, change the schema's
+# provider to "postgresql", and point DATABASE_URL at it.
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: "file:/data/dontcrossme.db"
+      SESSION_SECRET: "${SESSION_SECRET:-please-change-me}"
+      ADMIN_EMAIL: "${ADMIN_EMAIL:-coordinator@example.org}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-change-me}"
+      SOCIETY_NAME: "${SOCIETY_NAME:-My Orchid Society}"
+      # AI is OFF unless you set these:
+      AI_ENABLED: "${AI_ENABLED:-false}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      AI_MODEL: "${AI_MODEL:-claude-opus-4-8}"
+    volumes:
+      - dcm-data:/data
+
+  # db:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_PASSWORD: dontcrossme
+  #     POSTGRES_DB: dontcrossme
+  #   volumes:
+  #     - dcm-pg:/var/lib/postgresql/data
+
+volumes:
+  dcm-data:
+  # dcm-pg:
