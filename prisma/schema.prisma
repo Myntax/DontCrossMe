@@ -1,0 +1,475 @@
+// DontCrossMe — decentralized orchid breeding coordinator.
+//
+// PORTABILITY NOTE: this schema is deliberately written to work on BOTH SQLite
+// (the default, ideal for personal / forked instances) and PostgreSQL (for a
+// society at scale). To stay portable we avoid two Prisma features that SQLite
+// does not support: native `enum`s and scalar list fields (`String[]`).
+//   - "Enums" are plain `String` columns; allowed values are documented next to
+//     each field and validated in the application layer with Zod
+//     (see packages/engine/enums.ts).
+//   - "Arrays" are stored as JSON-encoded `String` columns named `*Json` and
+//     parsed with helpers in packages/db/json.ts.
+//
+// To run on Postgres: change `provider` below to "postgresql", set DATABASE_URL
+// accordingly, and run `prisma migrate dev`.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy (single default org in v1; the column is the growth path to
+// multi-tenant SaaS without a schema rewrite — see the plan).
+// ---------------------------------------------------------------------------
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// People
+// ---------------------------------------------------------------------------
+
+/// A login account. Minimal in v1 (single coordinator/admin); the role model
+/// is in place so member accounts drop in later.
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  /// ADMIN | COORDINATOR | CONTRIBUTOR | VIEWER
+  role         String   @default("VIEWER")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  grower           Grower?
+  createdCrosses   Cross[]             @relation("CrossCreatedBy")
+  authoredKnowledge KnowledgeItem[]    @relation("KnowledgeAuthor")
+  reviewedIntakes  IntakeSubmission[]  @relation("IntakeReviewer")
+}
+
+/// A member of the breeding program. A Grower is a *record* — it exists whether
+/// or not the person ever logs in. `userId` links a record to an account later.
+model Grower {
+  id             String   @id @default(cuid())
+  name           String
+  email          String?
+  phone          String?
+  location       String?
+  notes          String?
+  consentToShare Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  organizationId String?
+  userId         String?  @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user              User?               @relation(fields: [userId], references: [id])
+  plants            Plant[]
+  observations      CultureObservation[]
+  pollinations      PollinationEvent[]  @relation("PollinationOperator")
+  intakeSubmissions IntakeSubmission[]
+
+  @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Taxonomy — the orchid family is enormous & varied, so the tree is generic.
+// ---------------------------------------------------------------------------
+
+/// A taxon at any rank, plus registered hybrids (grexes). Hybrid grexes record
+/// their parentage via seed/pollen parent taxa.
+model Taxon {
+  id                 String   @id @default(cuid())
+  name               String
+  /// FAMILY | SUBFAMILY | TRIBE | SUBTRIBE | GENUS | SPECIES | GREX | CULTIVAR
+  rank               String
+  authority          String?
+  isHybrid           Boolean  @default(false)
+  chromosomeCount    Int?
+  /// free-text ploidy, e.g. "2n=2x=40"
+  ploidy             String?
+  nativeRange        String?
+  /// JSON array of synonym strings
+  synonymsJson       String?
+  rhsGrexId          String?
+  /// JSON object of external references, e.g. {"powo":"...","wcvp":"...","iospe":"..."}
+  externalRefsJson   String?
+  organizationId     String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  parentId           String?
+  parent             Taxon?   @relation("TaxonHierarchy", fields: [parentId], references: [id])
+  children           Taxon[]  @relation("TaxonHierarchy")
+
+  seedParentTaxonId  String?
+  seedParentTaxon    Taxon?   @relation("TaxonSeedParent", fields: [seedParentTaxonId], references: [id])
+  seedParentOf       Taxon[]  @relation("TaxonSeedParent")
+
+  pollenParentTaxonId String?
+  pollenParentTaxon   Taxon?  @relation("TaxonPollenParent", fields: [pollenParentTaxonId], references: [id])
+  pollenParentOf      Taxon[] @relation("TaxonPollenParent")
+
+  plants               Plant[]
+  cultureObservations  CultureObservation[]
+  knowledgeItems       KnowledgeItem[]
+  assessments          Assessment[]
+  bloomEvents          BloomEvent[]
+  crossesAsSeedTaxon   Cross[]  @relation("CrossSeedTaxon")
+  crossesAsPollenTaxon Cross[]  @relation("CrossPollenTaxon")
+
+  @@index([rank])
+  @@index([name])
+  @@index([parentId])
+}
+
+/// A specific physical plant owned/grown by a Grower.
+model Plant {
+  id                     String   @id @default(cuid())
+  taxonId                String
+  growerId               String?
+  /// clone / cultivar epithet, e.g. 'Red Beauty'
+  clonalName             String?
+  accessionCode          String?
+  source                 String?
+  acquiredAt             DateTime?
+  location               String?
+  notes                  String?
+  chromosomeCountOverride Int?
+  ploidyOverride         String?
+  organizationId         String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  taxon                  Taxon    @relation(fields: [taxonId], references: [id])
+  grower                 Grower?  @relation(fields: [growerId], references: [id])
+  observations           CultureObservation[]
+  bloomEvents            BloomEvent[]
+  crossesAsSeedParent    Cross[]  @relation("CrossSeedPlant")
+  crossesAsPollenParent  Cross[]  @relation("CrossPollenPlant")
+
+  @@index([taxonId])
+  @@index([growerId])
+}
+
+// ---------------------------------------------------------------------------
+// Breeding
+// ---------------------------------------------------------------------------
+
+/// A planned or executed cross. Parents may be specific plants or, when the
+/// exact plant is unknown, taxa.
+model Cross {
+  id                  String   @id @default(cuid())
+  code                String?
+  goal                String?
+  /// PLANNED | POLLINATED | POD_SET | FLASKED | SEEDLINGS | BLOOMED | FAILED | ABANDONED
+  status              String   @default("PLANNED")
+  /// INTRASPECIFIC | INTERSPECIFIC | INTERGENERIC | MULTIGENERIC (computed on save)
+  crossType           String?
+  plannedGrex         String?
+  notes               String?
+  organizationId      String?
+  createdById         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  seedParentPlantId   String?
+  seedParentPlant     Plant?   @relation("CrossSeedPlant", fields: [seedParentPlantId], references: [id])
+  pollenParentPlantId String?
+  pollenParentPlant   Plant?   @relation("CrossPollenPlant", fields: [pollenParentPlantId], references: [id])
+  seedParentTaxonId   String?
+  seedParentTaxon     Taxon?   @relation("CrossSeedTaxon", fields: [seedParentTaxonId], references: [id])
+  pollenParentTaxonId String?
+  pollenParentTaxon   Taxon?   @relation("CrossPollenTaxon", fields: [pollenParentTaxonId], references: [id])
+  createdBy           User?    @relation("CrossCreatedBy", fields: [createdById], references: [id])
+
+  pollinations  PollinationEvent[]
+  interventions Intervention[]
+  podSets       PodSet[]
+  seedBatches   SeedBatch[]
+  seedlingBatches SeedlingBatch[]
+  bloomEvents   BloomEvent[]
+  assessments   Assessment[]
+
+  @@index([status])
+  @@index([organizationId])
+}
+
+model PollinationEvent {
+  id               String    @id @default(cuid())
+  crossId          String
+  date             DateTime?
+  /// STANDARD | RECIPROCAL | MENTOR_POLLEN | MIXED_POLLEN | REPEAT
+  method           String    @default("STANDARD")
+  operatorGrowerId String?
+  pollenSource     String?
+  conditions       String?
+  /// initial take (pod began to form)
+  success          Boolean?
+  notes            String?
+  createdAt        DateTime  @default(now())
+
+  cross          Cross          @relation(fields: [crossId], references: [id], onDelete: Cascade)
+  operatorGrower Grower?        @relation("PollinationOperator", fields: [operatorGrowerId], references: [id])
+  interventions  Intervention[]
+
+  @@index([crossId])
+}
+
+model PodSet {
+  id        String    @id @default(cuid())
+  crossId   String
+  date      DateTime?
+  set       Boolean   @default(false)
+  podCount  Int?
+  matured   Boolean?
+  notes     String?
+  createdAt DateTime  @default(now())
+
+  cross Cross @relation(fields: [crossId], references: [id], onDelete: Cascade)
+
+  @@index([crossId])
+}
+
+model SeedBatch {
+  id                String    @id @default(cuid())
+  crossId           String
+  sownAt            DateTime?
+  /// GREEN_POD | DRY_SEED | SYMBIOTIC | ASYMBIOTIC
+  method            String    @default("ASYMBIOTIC")
+  medium            String?
+  flaskCount        Int?
+  contaminationRate Float?
+  notes             String?
+  createdAt         DateTime  @default(now())
+
+  cross           Cross               @relation(fields: [crossId], references: [id], onDelete: Cascade)
+  germinations    GerminationResult[]
+  seedlingBatches SeedlingBatch[]
+
+  @@index([crossId])
+}
+
+model GerminationResult {
+  id              String    @id @default(cuid())
+  seedBatchId     String
+  assessedAt      DateTime?
+  germinated      Boolean   @default(false)
+  germinationRate Float?
+  protocormCount  Int?
+  notes           String?
+  createdAt       DateTime  @default(now())
+
+  seedBatch SeedBatch @relation(fields: [seedBatchId], references: [id], onDelete: Cascade)
+
+  @@index([seedBatchId])
+}
+
+model SeedlingBatch {
+  id           String    @id @default(cuid())
+  seedBatchId  String?
+  crossId      String?
+  deflaskedAt  DateTime?
+  count        Int?
+  survivalRate Float?
+  notes        String?
+  createdAt    DateTime  @default(now())
+
+  seedBatch SeedBatch? @relation(fields: [seedBatchId], references: [id], onDelete: SetNull)
+  cross     Cross?     @relation(fields: [crossId], references: [id], onDelete: SetNull)
+
+  @@index([crossId])
+}
+
+model BloomEvent {
+  id          String    @id @default(cuid())
+  plantId     String?
+  crossId     String?
+  taxonId     String?
+  date        DateTime?
+  description String?
+  awarded     Boolean?
+  awardName   String?
+  notes       String?
+  createdAt   DateTime  @default(now())
+
+  plant Plant? @relation(fields: [plantId], references: [id], onDelete: SetNull)
+  cross Cross? @relation(fields: [crossId], references: [id], onDelete: SetNull)
+  taxon Taxon? @relation(fields: [taxonId], references: [id], onDelete: SetNull)
+}
+
+/// A technique applied to improve the odds of a difficult cross, logged with
+/// its outcome so the engine can learn what works.
+model Intervention {
+  id                 String    @id @default(cuid())
+  crossId            String?
+  pollinationEventId String?
+  /// EMBRYO_RESCUE | GREEN_POD_FLASK | RECIPROCAL_CROSS | MENTOR_POLLEN |
+  /// MIXED_POLLEN | STIGMA_PREP | TIMING_ADJUST | PLOIDY_CONVERSION |
+  /// GROWTH_REGULATOR | POLLEN_STORAGE | OTHER
+  type               String
+  /// JSON object of technique parameters
+  paramsJson         String?
+  appliedAt          DateTime?
+  /// SUCCESS | PARTIAL | FAILURE | UNKNOWN
+  outcome            String    @default("UNKNOWN")
+  notes              String?
+  createdAt          DateTime  @default(now())
+
+  cross            Cross?            @relation(fields: [crossId], references: [id], onDelete: SetNull)
+  pollinationEvent PollinationEvent? @relation(fields: [pollinationEventId], references: [id], onDelete: SetNull)
+
+  @@index([type])
+  @@index([crossId])
+}
+
+// ---------------------------------------------------------------------------
+// Culture & knowledge
+// ---------------------------------------------------------------------------
+
+/// A single culture data point — either a first-hand observation or a takeaway
+/// distilled from literature (linked via knowledgeItemId).
+model CultureObservation {
+  id               String    @id @default(cuid())
+  taxonId          String?
+  plantId          String?
+  growerId         String?
+  /// TEMPERATURE | LIGHT | WATER | HUMIDITY | MEDIA | FERTILIZER | POTTING |
+  /// REST_PERIOD | AIR_MOVEMENT | OTHER
+  parameter        String
+  valueText        String
+  context          String?
+  /// POSITIVE | NEGATIVE | NEUTRAL | UNKNOWN — did this practice work out
+  outcome          String    @default("UNKNOWN")
+  /// OBSERVATION | LITERATURE
+  sourceType       String    @default("OBSERVATION")
+  knowledgeItemId  String?
+  date             DateTime?
+  notes            String?
+  organizationId   String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  taxon         Taxon?         @relation(fields: [taxonId], references: [id], onDelete: SetNull)
+  plant         Plant?         @relation(fields: [plantId], references: [id], onDelete: SetNull)
+  grower        Grower?        @relation(fields: [growerId], references: [id], onDelete: SetNull)
+  knowledgeItem KnowledgeItem? @relation(fields: [knowledgeItemId], references: [id], onDelete: SetNull)
+
+  @@index([taxonId])
+  @@index([parameter])
+}
+
+/// A bibliographic source with per-source usage rights. These flags are the
+/// backbone of copyright / AI / commercial-use handling.
+model Source {
+  id                    String   @id @default(cuid())
+  title                 String
+  authors               String?
+  /// JOURNAL | BOOK | WEBSITE | DATABASE | PERSONAL_COMM | OTHER
+  type                  String   @default("OTHER")
+  url                   String?
+  doi                   String?
+  citation              String?
+  /// e.g. CC-BY-4.0 | PUBLIC_DOMAIN | USER_OWNED | ALL_RIGHTS_RESERVED | UNKNOWN
+  license               String   @default("UNKNOWN")
+  redistributionAllowed Boolean  @default(false)
+  aiUseAllowed          Boolean  @default(false)
+  commercialUseAllowed  Boolean  @default(false)
+  accessNotes           String?
+  organizationId        String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  knowledgeItems KnowledgeItem[]
+}
+
+/// A "practical takeaway": a short, factual, user-authored distillation tied to
+/// its source(s). We store paraphrased facts + citations, not copyrighted text.
+model KnowledgeItem {
+  id              String   @id @default(cuid())
+  title           String
+  takeaway        String
+  /// CULTURE | VIABILITY | INTERVENTION | TAXONOMY | GENERAL
+  category        String   @default("GENERAL")
+  taxonId         String?
+  /// SPECIES | GENUS | SUBTRIBE | GENERAL — how broadly the takeaway applies
+  taxonScope      String   @default("GENERAL")
+  /// optional short quote, only permitted when fairUseFlag is set
+  shortQuote      String?
+  fairUseFlag     Boolean  @default(false)
+  citation        String?
+  authoredByUserId String?
+  isUserAuthored  Boolean  @default(true)
+  /// derived: may this item's content be sent to an LLM? (user-authored OR all
+  /// linked sources allow AI use). Enforced again at query time by the gate.
+  aiEligible      Boolean  @default(false)
+  /// LOW | MEDIUM | HIGH
+  confidence      String   @default("MEDIUM")
+  organizationId  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  taxon               Taxon?               @relation(fields: [taxonId], references: [id], onDelete: SetNull)
+  authoredBy          User?                @relation("KnowledgeAuthor", fields: [authoredByUserId], references: [id])
+  sources             Source[]
+  cultureObservations CultureObservation[]
+
+  @@index([category])
+  @@index([taxonId])
+}
+
+/// A cached, generated assessment (viability / culture / intervention) with the
+/// evidence it was built from. `aiUsed` records whether the AI layer was involved.
+model Assessment {
+  id             String   @id @default(cuid())
+  /// VIABILITY | CULTURE | INTERVENTION
+  kind           String
+  crossId        String?
+  taxonId        String?
+  score          Float?
+  /// LOW | MEDIUM | HIGH
+  confidence     String?
+  summary        String
+  /// JSON: structured factors + weights
+  reasoningJson  String?
+  /// JSON array of evidence record ids used
+  evidenceIdsJson String?
+  aiUsed         Boolean  @default(false)
+  aiNarrative    String?
+  createdAt      DateTime @default(now())
+
+  cross Cross? @relation(fields: [crossId], references: [id], onDelete: Cascade)
+  taxon Taxon? @relation(fields: [taxonId], references: [id], onDelete: SetNull)
+
+  @@index([kind])
+}
+
+/// An account-less submission from a member, held for coordinator review.
+model IntakeSubmission {
+  id             String   @id @default(cuid())
+  submitterName  String?
+  submitterEmail String?
+  growerId       String?
+  /// OBSERVATION | CROSS | PLANT | NOTE
+  kind           String
+  /// JSON payload matching the kind
+  payloadJson    String
+  /// PENDING | APPROVED | REJECTED
+  status         String   @default("PENDING")
+  reviewNotes    String?
+  reviewedByUserId String?
+  reviewedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  grower     Grower? @relation(fields: [growerId], references: [id], onDelete: SetNull)
+  reviewedBy User?   @relation("IntakeReviewer", fields: [reviewedByUserId], references: [id])
+
+  @@index([status])
+}

@@ -1,0 +1,45 @@
+{
+  "name": "dontcrossme",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Decentralized orchid breeding coordinator — culture tips, cross-viability, and intervention suggestions that learn over time.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma generate && next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:reset": "prisma migrate reset --force",
+    "export": "tsx scripts/export.ts",
+    "import": "tsx scripts/import.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "6.3.0",
+    "next": "^15.5.20",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "zod": "3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.7",
+    "@types/react": "19.0.7",
+    "@types/react-dom": "19.0.3",
+    "prisma": "6.3.0",
+    "tsx": "^4.23.1",
+    "typescript": "5.7.3",
+    "vite-tsconfig-paths": "5.1.4",
+    "vitest": "^3.2.7"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  }
+}

@@ -137,3 +137,16 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# SQLite databases (local / forked instances)
+*.db
+*.db-journal
+prisma/*.db
+prisma/*.db-journal
+
+# Local data exports
+/exports/
+
+# Playwright
+/test-results/
+/playwright-report/
