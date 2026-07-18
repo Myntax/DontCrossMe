@@ -110,3 +110,76 @@ export function classifyCross(a: TaxonInfo, b: TaxonInfo): TaxonomicRelation {
 export function taxonPairKey(a: string, b: string): string {
   return [a, b].sort().join("::");
 }
+
+// ---------------------------------------------------------------------------
+// Reclassification support (pure). These operate on plain maps so they can be
+// unit-tested without a database, and are used by the DB adapter/service to
+// keep analysis correct as taxa get reclassified, merged, and split.
+// ---------------------------------------------------------------------------
+
+export interface AcceptedResolvable {
+  acceptedTaxonId?: string | null;
+  status?: string | null;
+}
+
+/**
+ * Follow a taxon's synonym/deprecated redirect to its currently accepted taxon.
+ * Cycle-guarded (returns the last id seen if a loop is detected).
+ */
+export function resolveAccepted(
+  map: Map<string, AcceptedResolvable>,
+  id: string,
+): string {
+  const seen = new Set<string>();
+  let current = id;
+  while (!seen.has(current)) {
+    seen.add(current);
+    const node = map.get(current);
+    if (!node) return current;
+    const status = node.status ?? "ACCEPTED";
+    if ((status === "SYNONYM" || status === "DEPRECATED") && node.acceptedTaxonId) {
+      current = node.acceptedTaxonId;
+      continue;
+    }
+    return current;
+  }
+  return current; // cycle
+}
+
+/**
+ * Map a hybrid genus's component genera through reclassification to their current
+ * accepted genera, de-duplicated. E.g. after Sophronitis+Laelia are sunk into
+ * Cattleya, {Sophronitis, Laelia, Cattleya} → {Cattleya}.
+ */
+export function computeEffectiveComponents(
+  componentGenusIds: string[],
+  map: Map<string, AcceptedResolvable>,
+): string[] {
+  const set = new Set<string>();
+  for (const g of componentGenusIds) set.add(resolveAccepted(map, g));
+  return [...set];
+}
+
+export interface CollapseResult {
+  collapsed: boolean;
+  effectiveComponents: string[];
+  collapsedInto?: string;
+}
+
+/**
+ * A nothogenus "collapses" when its components resolve to a single accepted genus
+ * — it is no longer a hybrid genus, and its intergeneric grexes become
+ * intra-generic. Detecting this is what drives the reclassification review queue.
+ */
+export function detectCollapse(
+  componentGenusIds: string[],
+  map: Map<string, AcceptedResolvable>,
+): CollapseResult {
+  const effectiveComponents = computeEffectiveComponents(componentGenusIds, map);
+  const collapsed = effectiveComponents.length <= 1;
+  return {
+    collapsed,
+    effectiveComponents,
+    collapsedInto: collapsed ? effectiveComponents[0] : undefined,
+  };
+}

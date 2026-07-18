@@ -11,6 +11,7 @@ import {
   getPrecedent,
   getInterventionHistory,
   getCultureRecords,
+  getInterventionCatalog,
 } from "@db/evidence-adapter";
 import {
   assessViability,
@@ -72,11 +73,15 @@ export async function assessCross(
   });
 
   const history = await getInterventionHistory();
-  const interventions = suggestInterventions({
-    crossType: viability.crossType,
-    viabilityScore: viability.score,
-    history,
-  });
+  const catalog = await getInterventionCatalog();
+  const interventions = suggestInterventions(
+    {
+      crossType: viability.crossType,
+      viabilityScore: viability.score,
+      history,
+    },
+    catalog,
+  );
 
   const provider = getAiProvider();
   const evidence = [
@@ -100,12 +105,15 @@ export interface CultureAdvice {
 
 export async function cultureTips(taxonId: string): Promise<CultureAdvice> {
   const info = await buildTaxonInfo(taxonId);
+  // buildTaxonInfo resolves through reclassification, so info.id is the accepted
+  // taxon — use it so a synonym's tips resolve to the accepted taxon's evidence.
+  const acceptedId = info?.id ?? taxonId;
   const genusId = info?.genusId ?? null;
-  const records = await getCultureRecords(taxonId, genusId);
-  const tips = rankCultureTips(taxonId, genusId, records);
+  const records = await getCultureRecords(acceptedId, genusId);
+  const tips = rankCultureTips(acceptedId, genusId, records);
 
   const provider = getAiProvider();
-  const evidence = await knowledgeSnippets(taxonId, "CULTURE");
+  const evidence = await knowledgeSnippets(acceptedId, "CULTURE");
   const narrative = await provider.synthesize({
     kind: "CULTURE",
     deterministicSummary:

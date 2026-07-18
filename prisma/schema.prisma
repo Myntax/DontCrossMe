@@ -101,9 +101,22 @@ model Taxon {
   rhsGrexId          String?
   /// JSON object of external references, e.g. {"powo":"...","wcvp":"...","iospe":"..."}
   externalRefsJson   String?
+  /// ACCEPTED | SYNONYM | DEPRECATED — nomenclatural status
+  status             String   @default("ACCEPTED")
+  /// CONDENSED_PORTMANTEAU | CONDENSED_HONORIFIC | null — for hybrid genera (nothogenera)
+  nothoFormulaType   String?
+  /// RHS-style abbreviation for a (notho)genus, e.g. "Lc.", "Fdk."
+  formulaAbbreviation String?
+  /// flagged for coordinator attention after a reclassification impact
+  needsReview        Boolean  @default(false)
   organizationId     String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+
+  /// when status is SYNONYM/DEPRECATED, the currently accepted taxon
+  acceptedTaxonId    String?
+  acceptedTaxon      Taxon?   @relation("TaxonAccepted", fields: [acceptedTaxonId], references: [id])
+  synonymsOfAccepted Taxon[]  @relation("TaxonAccepted")
 
   parentId           String?
   parent             Taxon?   @relation("TaxonHierarchy", fields: [parentId], references: [id])
@@ -124,10 +137,73 @@ model Taxon {
   bloomEvents          BloomEvent[]
   crossesAsSeedTaxon   Cross[]  @relation("CrossSeedTaxon")
   crossesAsPollenTaxon Cross[]  @relation("CrossPollenTaxon")
+  names                TaxonName[]
+  revisions            TaxonRevision[] @relation("TaxonRevisionSubject")
+  revisionsAsRelated   TaxonRevision[] @relation("TaxonRevisionRelated")
+  nothoComponents      NothoGenusComponent[] @relation("NothoGenusOf")
+  componentOfNotho     NothoGenusComponent[] @relation("ComponentGenusOf")
 
   @@index([rank])
   @@index([name])
   @@index([parentId])
+  @@index([status])
+  @@index([acceptedTaxonId])
+}
+
+/// One of a taxon's many names. Decouples the label from the taxon so a name can
+/// stay in horticultural use even after it's a scientific synonym (e.g.
+/// "Neofinetia falcata" on the accepted taxon Vanda falcata).
+model TaxonName {
+  id               String   @id @default(cuid())
+  taxonId          String
+  name             String
+  /// ACCEPTED_SCIENTIFIC | SYNONYM_SCIENTIFIC | BASIONYM | HORTICULTURAL | TRADE | COMMON
+  nameType         String   @default("ACCEPTED_SCIENTIFIC")
+  authority        String?
+  inCurrentUse     Boolean  @default(true)
+  isPreferredDisplay Boolean @default(false)
+  note             String?
+  createdAt        DateTime @default(now())
+
+  taxon Taxon @relation(fields: [taxonId], references: [id], onDelete: Cascade)
+
+  @@index([taxonId])
+  @@index([name])
+}
+
+/// Audit trail of every taxonomic change (rename/move/merge/split/…), storing the
+/// before/after state so revisions are traceable and reversible.
+model TaxonRevision {
+  id              String   @id @default(cuid())
+  taxonId         String
+  /// CREATE | RENAME | MOVE | RECLASSIFY_RANK | MARK_SYNONYM | MERGE | SPLIT | DEPRECATE | RESTORE
+  action          String
+  relatedTaxonId  String?
+  beforeJson      String?
+  afterJson       String?
+  note            String?
+  changedByUserId String?
+  createdAt       DateTime @default(now())
+
+  taxon        Taxon  @relation("TaxonRevisionSubject", fields: [taxonId], references: [id], onDelete: Cascade)
+  relatedTaxon Taxon? @relation("TaxonRevisionRelated", fields: [relatedTaxonId], references: [id], onDelete: SetNull)
+
+  @@index([taxonId])
+  @@index([action])
+}
+
+/// A component (ancestor) genus of a hybrid genus (nothogenus). ×Laeliocattleya has
+/// components {Laelia, Cattleya}; Fredclarkeara has {Catasetum, Clowesia, Mormodes}.
+model NothoGenusComponent {
+  id              String @id @default(cuid())
+  nothoGenusId    String
+  componentGenusId String
+
+  nothoGenus     Taxon @relation("NothoGenusOf", fields: [nothoGenusId], references: [id], onDelete: Cascade)
+  componentGenus Taxon @relation("ComponentGenusOf", fields: [componentGenusId], references: [id], onDelete: Cascade)
+
+  @@unique([nothoGenusId, componentGenusId])
+  @@index([componentGenusId])
 }
 
 /// A specific physical plant owned/grown by a Grower.
@@ -383,11 +459,60 @@ model Source {
   aiUseAllowed          Boolean  @default(false)
   commercialUseAllowed  Boolean  @default(false)
   accessNotes           String?
+  /// the reference database this source came from (registry, below)
+  referenceDatabaseId   String?
   organizationId        String?
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
-  knowledgeItems KnowledgeItem[]
+  referenceDatabase ReferenceDatabase? @relation(fields: [referenceDatabaseId], references: [id], onDelete: SetNull)
+  knowledgeItems    KnowledgeItem[]
+
+  @@index([referenceDatabaseId])
+}
+
+/// A registry of external reference databases, onboarded over time as they're
+/// discovered. Carries default usage rights that pre-fill sources drawn from it,
+/// keeping the copyright/AI gate consistent per database.
+model ReferenceDatabase {
+  id                          String   @id @default(cuid())
+  name                        String   @unique
+  description                 String?
+  url                         String?
+  /// TAXONOMY | CULTURE | REGISTER | LITERATURE | OTHER
+  kind                        String   @default("OTHER")
+  defaultLicense              String   @default("UNKNOWN")
+  defaultAiUseAllowed         Boolean  @default(false)
+  defaultRedistributionAllowed Boolean @default(false)
+  defaultCommercialUseAllowed Boolean  @default(false)
+  /// how to bring data in (sanctioned access path) + terms-of-use notes
+  captureGuidance             String?
+  /// EVALUATING | ACTIVE | RETIRED
+  status                      String   @default("EVALUATING")
+  organizationId              String?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  sources Source[]
+}
+
+/// The intervention catalog, made data-driven so new techniques can be added over
+/// time without code changes. Built-ins are seeded with isBuiltIn=true.
+model InterventionTechnique {
+  id              String   @id @default(cuid())
+  key             String   @unique
+  label           String
+  description     String
+  /// JSON array of cross types this applies to, e.g. ["INTERGENERIC","MULTIGENERIC"]
+  appliesToJson   String
+  /// only surface at/below this viability (0–100)
+  maxViability    Int      @default(100)
+  basePriority    Int      @default(5)
+  isBuiltIn       Boolean  @default(false)
+  isActive        Boolean  @default(true)
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 /// A "practical takeaway": a short, factual, user-authored distillation tied to

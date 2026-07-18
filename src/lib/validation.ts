@@ -5,9 +5,9 @@ import { z } from "zod";
 import {
   TAXON_RANKS,
   CROSS_STATUSES,
+  CROSS_TYPES,
   POLLINATION_METHODS,
   SEED_METHODS,
-  INTERVENTION_TYPES,
   INTERVENTION_OUTCOMES,
   CULTURE_PARAMETERS,
   OUTCOMES,
@@ -15,6 +15,9 @@ import {
   LICENSES,
   KNOWLEDGE_CATEGORIES,
   TAXON_SCOPES,
+  TAXON_NAME_TYPES,
+  REFERENCE_DB_KINDS,
+  REFERENCE_DB_STATUSES,
   INTAKE_KINDS,
 } from "@engine/enums";
 
@@ -99,9 +102,46 @@ export const seedBatchSchema = z.object({
 
 export const interventionSchema = z.object({
   crossId: optionalString,
-  type: z.enum(INTERVENTION_TYPES),
+  // Any active technique key (built-in or user-added), not a fixed enum.
+  type: z.string().trim().min(1, "A technique is required"),
   outcome: z.enum(INTERVENTION_OUTCOMES).optional(),
   notes: optionalString,
+});
+
+export const interventionTechniqueSchema = z.object({
+  key: z
+    .string()
+    .trim()
+    .min(1)
+    .transform((s) => s.toUpperCase().replace(/[^A-Z0-9]+/g, "_")),
+  label: z.string().trim().min(1),
+  description: z.string().trim().min(1),
+  appliesTo: z.array(z.enum(CROSS_TYPES)).min(1, "Pick at least one cross type"),
+  maxViability: z.coerce.number().int().min(0).max(100).optional(),
+  basePriority: z.coerce.number().int().min(0).max(100).optional(),
+});
+
+export const taxonNameSchema = z.object({
+  taxonId: z.string().min(1),
+  name: z.string().trim().min(1),
+  nameType: z.enum(TAXON_NAME_TYPES).optional(),
+  authority: optionalString,
+  inCurrentUse: z.coerce.boolean().optional(),
+  isPreferredDisplay: z.coerce.boolean().optional(),
+  note: optionalString,
+});
+
+export const referenceDatabaseSchema = z.object({
+  name: z.string().trim().min(1),
+  description: optionalString,
+  url: optionalString,
+  kind: z.enum(REFERENCE_DB_KINDS).optional(),
+  defaultLicense: z.enum(LICENSES).optional(),
+  defaultAiUseAllowed: z.coerce.boolean().optional(),
+  defaultRedistributionAllowed: z.coerce.boolean().optional(),
+  defaultCommercialUseAllowed: z.coerce.boolean().optional(),
+  captureGuidance: optionalString,
+  status: z.enum(REFERENCE_DB_STATUSES).optional(),
 });
 
 export const observationSchema = z.object({
@@ -127,6 +167,7 @@ export const sourceSchema = z.object({
   aiUseAllowed: z.coerce.boolean().optional(),
   commercialUseAllowed: z.coerce.boolean().optional(),
   accessNotes: optionalString,
+  referenceDatabaseId: optionalString,
 });
 
 export const knowledgeSchema = z.object({
