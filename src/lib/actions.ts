@@ -8,6 +8,17 @@ import { classifyCross } from "@engine/index";
 import { computeAiEligibility } from "@ai/index";
 import { getCurrentUser, canEdit, canReview, login, logout } from "./auth";
 import {
+  renameTaxon,
+  moveTaxon,
+  reclassifyRank,
+  markSynonym,
+  mergeTaxa,
+  splitTaxon,
+  deprecateTaxon,
+  restoreTaxon,
+  clearNeedsReview,
+} from "./taxonomy-service";
+import {
   growerSchema,
   taxonSchema,
   plantSchema,
@@ -15,6 +26,9 @@ import {
   pollinationSchema,
   podSetSchema,
   interventionSchema,
+  interventionTechniqueSchema,
+  taxonNameSchema,
+  referenceDatabaseSchema,
   observationSchema,
   sourceSchema,
   knowledgeSchema,
@@ -254,8 +268,25 @@ export async function createSource(formData: FormData) {
   await requireEditor();
   const parsed = sourceSchema.safeParse(obj(formData));
   if (!parsed.success) back("/knowledge", parsed.error.issues[0].message);
+  const d = { ...parsed.data };
+
+  // Pre-fill licensing from the originating reference database's defaults where
+  // the form left the conservative defaults untouched.
+  if (d.referenceDatabaseId) {
+    const db = await prisma.referenceDatabase.findUnique({
+      where: { id: d.referenceDatabaseId },
+    });
+    if (db) {
+      if (!d.license || d.license === "UNKNOWN")
+        d.license = db.defaultLicense as typeof d.license;
+      if (!d.aiUseAllowed) d.aiUseAllowed = db.defaultAiUseAllowed;
+      if (!d.redistributionAllowed) d.redistributionAllowed = db.defaultRedistributionAllowed;
+      if (!d.commercialUseAllowed) d.commercialUseAllowed = db.defaultCommercialUseAllowed;
+    }
+  }
+
   await prisma.source.create({
-    data: { ...parsed.data, organizationId: "org_default" },
+    data: { ...d, organizationId: "org_default" },
   });
   revalidatePath("/knowledge");
   redirect("/knowledge");
@@ -367,4 +398,217 @@ export async function reviewIntake(formData: FormData) {
   });
   revalidatePath("/intake-review");
   redirect("/intake-review");
+}
+
+// --- Taxon names -----------------------------------------------------------
+
+export async function addTaxonName(formData: FormData) {
+  await requireEditor();
+  const parsed = taxonNameSchema.safeParse(obj(formData));
+  if (!parsed.success) back(`/taxa`, parsed.error.issues[0].message);
+  const d = parsed.data;
+  // Only one preferred-display name per taxon.
+  if (d.isPreferredDisplay) {
+    await prisma.taxonName.updateMany({
+      where: { taxonId: d.taxonId },
+      data: { isPreferredDisplay: false },
+    });
+  }
+  await prisma.taxonName.create({
+    data: {
+      taxonId: d.taxonId,
+      name: d.name,
+      nameType: d.nameType ?? "HORTICULTURAL",
+      authority: d.authority,
+      inCurrentUse: d.inCurrentUse ?? true,
+      isPreferredDisplay: d.isPreferredDisplay ?? false,
+      note: d.note,
+    },
+  });
+  revalidatePath(`/taxa/${d.taxonId}`);
+  redirect(`/taxa/${d.taxonId}`);
+}
+
+// --- Reclassification (calls the taxonomy service) -------------------------
+
+export async function reclassifyTaxon(formData: FormData) {
+  const user = await requireEditor();
+  const op = String(formData.get("op"));
+  const taxonId = String(formData.get("taxonId"));
+  const path = `/taxa/${taxonId}`;
+  try {
+    switch (op) {
+      case "rename":
+        await renameTaxon(
+          taxonId,
+          String(formData.get("name") || ""),
+          (formData.get("authority") as string) || undefined,
+          user.id,
+        );
+        break;
+      case "move":
+        await moveTaxon(taxonId, (formData.get("parentId") as string) || null, user.id);
+        break;
+      case "rank":
+        await reclassifyRank(taxonId, String(formData.get("rank") || ""), user.id);
+        break;
+      case "synonym":
+        await markSynonym(
+          taxonId,
+          String(formData.get("acceptedTaxonId") || ""),
+          formData.get("reassign") === "true",
+          user.id,
+        );
+        break;
+      case "deprecate":
+        await deprecateTaxon(taxonId, (formData.get("note") as string) || undefined, user.id);
+        break;
+      case "restore":
+        await restoreTaxon(taxonId, user.id);
+        break;
+      case "clearReview":
+        await clearNeedsReview(taxonId, (formData.get("note") as string) || undefined, user.id);
+        break;
+      default:
+        back(path, "Unknown operation");
+    }
+  } catch (e) {
+    // Let Next's redirect control-flow error propagate.
+    if (e instanceof Error && e.message.startsWith("NEXT_REDIRECT")) throw e;
+    back(path, e instanceof Error ? e.message : "Reclassification failed");
+  }
+  revalidatePath(path);
+  redirect(path);
+}
+
+export async function mergeTaxaAction(formData: FormData) {
+  const user = await requireEditor();
+  const sourceId = String(formData.get("sourceId"));
+  const targetId = String(formData.get("targetId"));
+  try {
+    await mergeTaxa(sourceId, targetId, user.id);
+  } catch (e) {
+    back(`/taxa/${sourceId}`, e instanceof Error ? e.message : "Merge failed");
+  }
+  revalidatePath("/taxa");
+  redirect(`/taxa/${targetId}`);
+}
+
+export async function splitTaxonAction(formData: FormData) {
+  const user = await requireEditor();
+  const raw = obj(formData);
+  const sourceId = String(raw.sourceId);
+  try {
+    const created = await splitTaxon(
+      sourceId,
+      {
+        name: String(raw.name || ""),
+        rank: String(raw.rank || "SPECIES"),
+        authority: (raw.authority as string) || undefined,
+      },
+      (raw.plantIds as string[]) ?? [],
+      (raw.observationIds as string[]) ?? [],
+      user.id,
+    );
+    revalidatePath("/taxa");
+    redirect(`/taxa/${created.id}`);
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("NEXT_REDIRECT")) throw e;
+    back(`/taxa/${sourceId}`, e instanceof Error ? e.message : "Split failed");
+  }
+}
+
+// --- Nothogenus components -------------------------------------------------
+
+export async function addNothoComponent(formData: FormData) {
+  await requireEditor();
+  const nothoGenusId = String(formData.get("nothoGenusId"));
+  const componentGenusId = String(formData.get("componentGenusId"));
+  if (nothoGenusId && componentGenusId) {
+    await prisma.nothoGenusComponent
+      .create({ data: { nothoGenusId, componentGenusId } })
+      .catch(() => {}); // ignore duplicate (unique constraint)
+  }
+  revalidatePath(`/taxa/${nothoGenusId}`);
+  redirect(`/taxa/${nothoGenusId}`);
+}
+
+export async function removeNothoComponent(formData: FormData) {
+  await requireEditor();
+  const id = String(formData.get("id"));
+  const nothoGenusId = String(formData.get("nothoGenusId"));
+  await prisma.nothoGenusComponent.delete({ where: { id } }).catch(() => {});
+  revalidatePath(`/taxa/${nothoGenusId}`);
+  redirect(`/taxa/${nothoGenusId}`);
+}
+
+// --- Intervention techniques ----------------------------------------------
+
+export async function createInterventionTechnique(formData: FormData) {
+  const user = await requireEditor();
+  const parsed = interventionTechniqueSchema.safeParse(obj(formData));
+  if (!parsed.success) back("/techniques", parsed.error.issues[0].message);
+  const d = parsed.data;
+  try {
+    await prisma.interventionTechnique.create({
+      data: {
+        key: d.key,
+        label: d.label,
+        description: d.description,
+        appliesToJson: JSON.stringify(d.appliesTo),
+        maxViability: d.maxViability ?? 100,
+        basePriority: d.basePriority ?? 5,
+        isBuiltIn: false,
+        createdByUserId: user.id,
+      },
+    });
+  } catch {
+    back("/techniques", `A technique with key "${d.key}" already exists`);
+  }
+  revalidatePath("/techniques");
+  redirect("/techniques");
+}
+
+export async function toggleInterventionTechnique(formData: FormData) {
+  await requireEditor();
+  const id = String(formData.get("id"));
+  const t = await prisma.interventionTechnique.findUnique({ where: { id } });
+  if (t) {
+    await prisma.interventionTechnique.update({
+      where: { id },
+      data: { isActive: !t.isActive },
+    });
+  }
+  revalidatePath("/techniques");
+  redirect("/techniques");
+}
+
+// --- Reference databases ---------------------------------------------------
+
+export async function createReferenceDatabase(formData: FormData) {
+  await requireEditor();
+  const parsed = referenceDatabaseSchema.safeParse(obj(formData));
+  if (!parsed.success) back("/reference-databases", parsed.error.issues[0].message);
+  const d = parsed.data;
+  try {
+    await prisma.referenceDatabase.create({
+      data: {
+        name: d.name,
+        description: d.description,
+        url: d.url,
+        kind: d.kind ?? "OTHER",
+        defaultLicense: d.defaultLicense ?? "UNKNOWN",
+        defaultAiUseAllowed: d.defaultAiUseAllowed ?? false,
+        defaultRedistributionAllowed: d.defaultRedistributionAllowed ?? false,
+        defaultCommercialUseAllowed: d.defaultCommercialUseAllowed ?? false,
+        captureGuidance: d.captureGuidance,
+        status: d.status ?? "EVALUATING",
+        organizationId: "org_default",
+      },
+    });
+  } catch {
+    back("/reference-databases", `A database named "${d.name}" already exists`);
+  }
+  revalidatePath("/reference-databases");
+  redirect("/reference-databases");
 }

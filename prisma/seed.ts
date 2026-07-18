@@ -4,6 +4,7 @@
 
 import { PrismaClient } from "@prisma/client";
 import { hashPassword } from "../src/lib/password";
+import { DEFAULT_INTERVENTION_CATALOG } from "../packages/engine/interventions";
 
 const prisma = new PrismaClient();
 
@@ -261,10 +262,180 @@ async function main() {
     },
   });
 
+  // --- Extra taxa for nothogenus & reclassification demos -----------------
+  const extraTaxa: {
+    id: string;
+    name: string;
+    rank: string;
+    parentId?: string;
+    isHybrid?: boolean;
+    nothoFormulaType?: string;
+    formulaAbbreviation?: string;
+  }[] = [
+    // Vandeae → Aeridinae → Vanda (for the Neofinetia horticultural-name demo)
+    { id: "t_aeridinae", name: "Aeridinae", rank: "SUBTRIBE", parentId: "t_epidendroideae" },
+    { id: "t_vanda", name: "Vanda", rank: "GENUS", parentId: "t_aeridinae" },
+    { id: "t_v_falcata", name: "Vanda falcata", rank: "SPECIES", parentId: "t_vanda", },
+    // Catasetinae genera for the Fredclarkeara nothogenus
+    { id: "t_catasetinae", name: "Catasetinae", rank: "SUBTRIBE", parentId: "t_epidendroideae" },
+    { id: "t_catasetum", name: "Catasetum", rank: "GENUS", parentId: "t_catasetinae" },
+    { id: "t_clowesia", name: "Clowesia", rank: "GENUS", parentId: "t_catasetinae" },
+    { id: "t_mormodes", name: "Mormodes", rank: "GENUS", parentId: "t_catasetinae" },
+    // Nothogenera
+    {
+      id: "t_laeliocattleya",
+      name: "Laeliocattleya",
+      rank: "GENUS",
+      parentId: "t_laeliinae",
+      isHybrid: true,
+      nothoFormulaType: "CONDENSED_PORTMANTEAU",
+      formulaAbbreviation: "Lc.",
+    },
+    {
+      id: "t_fredclarkeara",
+      name: "Fredclarkeara",
+      rank: "GENUS",
+      parentId: "t_catasetinae",
+      isHybrid: true,
+      nothoFormulaType: "CONDENSED_HONORIFIC",
+      formulaAbbreviation: "Fdk.",
+    },
+  ];
+  for (const t of extraTaxa) {
+    await prisma.taxon.upsert({
+      where: { id: t.id },
+      update: t,
+      create: { organizationId: org.id, ...t },
+    });
+  }
+
+  // Nothogenus component genera.
+  const components: [string, string, string][] = [
+    ["nc_lc_laelia", "t_laeliocattleya", "t_laelia"],
+    ["nc_lc_cattleya", "t_laeliocattleya", "t_cattleya"],
+    ["nc_fdk_catasetum", "t_fredclarkeara", "t_catasetum"],
+    ["nc_fdk_clowesia", "t_fredclarkeara", "t_clowesia"],
+    ["nc_fdk_mormodes", "t_fredclarkeara", "t_mormodes"],
+  ];
+  for (const [id, nothoGenusId, componentGenusId] of components) {
+    await prisma.nothoGenusComponent.upsert({
+      where: { id },
+      update: {},
+      create: { id, nothoGenusId, componentGenusId },
+    });
+  }
+
+  // --- Names (decoupled from taxa) — the Neofinetia case -------------------
+  const names: {
+    id: string;
+    taxonId: string;
+    name: string;
+    nameType: string;
+    inCurrentUse?: boolean;
+    isPreferredDisplay?: boolean;
+    note?: string;
+  }[] = [
+    { id: "tn_vanda_acc", taxonId: "t_v_falcata", name: "Vanda falcata", nameType: "ACCEPTED_SCIENTIFIC" },
+    {
+      id: "tn_neofinetia",
+      taxonId: "t_v_falcata",
+      name: "Neofinetia falcata",
+      nameType: "HORTICULTURAL",
+      inCurrentUse: true,
+      isPreferredDisplay: false,
+      note: "Name in continued horticultural use (Japanese Fūkiran tradition).",
+    },
+    { id: "tn_catt_lab", taxonId: "t_c_labiata", name: "Cattleya labiata", nameType: "ACCEPTED_SCIENTIFIC" },
+  ];
+  for (const n of names) {
+    await prisma.taxonName.upsert({ where: { id: n.id }, update: {}, create: n });
+  }
+
+  // --- Intervention techniques (seed the built-in catalog) ----------------
+  for (const c of DEFAULT_INTERVENTION_CATALOG) {
+    await prisma.interventionTechnique.upsert({
+      where: { key: c.type as string },
+      update: {},
+      create: {
+        key: c.type as string,
+        label: c.label,
+        description: c.description,
+        appliesToJson: JSON.stringify(c.appliesTo),
+        maxViability: c.maxViability,
+        basePriority: c.basePriority,
+        isBuiltIn: true,
+      },
+    });
+  }
+
+  // --- Reference databases (registry) -------------------------------------
+  const refDbs: {
+    id: string;
+    name: string;
+    kind: string;
+    url?: string;
+    defaultLicense: string;
+    defaultAiUseAllowed: boolean;
+    defaultRedistributionAllowed: boolean;
+    defaultCommercialUseAllowed: boolean;
+    captureGuidance: string;
+    status: string;
+  }[] = [
+    {
+      id: "rdb_powo",
+      name: "Kew POWO / WCVP",
+      kind: "TAXONOMY",
+      url: "https://powo.science.kew.org",
+      defaultLicense: "CC-BY-4.0",
+      defaultAiUseAllowed: false,
+      defaultRedistributionAllowed: true,
+      defaultCommercialUseAllowed: false,
+      captureGuidance: "Use the sanctioned WCVP data download; attribute Kew (CC-BY).",
+      status: "EVALUATING",
+    },
+    {
+      id: "rdb_rhs",
+      name: "RHS Orchid Register",
+      kind: "REGISTER",
+      url: "https://www.rhs.org.uk/plants/search-form",
+      defaultLicense: "ALL_RIGHTS_RESERVED",
+      defaultAiUseAllowed: false,
+      defaultRedistributionAllowed: false,
+      defaultCommercialUseAllowed: false,
+      captureGuidance: "No bulk scraping. Enter grex parentage manually with citation.",
+      status: "EVALUATING",
+    },
+    {
+      id: "rdb_iospe",
+      name: "IOSPE / AOS culture notes",
+      kind: "CULTURE",
+      url: "http://www.orchidspecies.com",
+      defaultLicense: "ALL_RIGHTS_RESERVED",
+      defaultAiUseAllowed: false,
+      defaultRedistributionAllowed: false,
+      defaultCommercialUseAllowed: false,
+      captureGuidance: "Manual capture of distilled takeaways only; do not send to AI.",
+      status: "EVALUATING",
+    },
+  ];
+  for (const d of refDbs) {
+    await prisma.referenceDatabase.upsert({
+      where: { id: d.id },
+      update: {},
+      create: { organizationId: org.id, ...d },
+    });
+  }
+  // Link the restricted culture source to its originating database.
+  await prisma.source.update({
+    where: { id: "src_iospe" },
+    data: { referenceDatabaseId: "rdb_iospe" },
+  }).catch(() => {});
+
   console.log("Seed complete:");
   console.log(`  org: ${org.name}`);
   console.log(`  admin: ${adminEmail}`);
-  console.log(`  taxa: ${taxa.length + 1}, grower: ${grower.name}`);
+  console.log(`  taxa: ${taxa.length + 1 + extraTaxa.length}, grower: ${grower.name}`);
+  console.log(`  nothogenera: Laeliocattleya, Fredclarkeara; techniques: ${DEFAULT_INTERVENTION_CATALOG.length}; ref DBs: ${refDbs.length}`);
 }
 
 main()

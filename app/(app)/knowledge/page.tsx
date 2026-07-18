@@ -22,8 +22,11 @@ export default async function KnowledgePage({
   searchParams: Promise<{ error?: string }>;
 }) {
   const { error } = await searchParams;
-  const [sources, takeaways, taxa] = await Promise.all([
-    prisma.source.findMany({ orderBy: { createdAt: "desc" } }),
+  const [sources, takeaways, taxa, refDbs] = await Promise.all([
+    prisma.source.findMany({
+      orderBy: { createdAt: "desc" },
+      include: { referenceDatabase: true },
+    }),
     prisma.knowledgeItem.findMany({
       orderBy: { createdAt: "desc" },
       include: { taxon: true, sources: true },
@@ -32,6 +35,7 @@ export default async function KnowledgePage({
       where: { rank: { in: ["SPECIES", "GENUS", "SUBTRIBE", "GREX"] } },
       orderBy: { name: "asc" },
     }),
+    prisma.referenceDatabase.findMany({ orderBy: { name: "asc" } }),
   ]);
 
   return (
@@ -206,6 +210,15 @@ export default async function KnowledgePage({
       <Card title="Add a source">
         <form className="stack" action={createSource}>
           <Field label="Title" name="title" required />
+          {refDbs.length > 0 && (
+            <Select
+              label="From reference database"
+              name="referenceDatabaseId"
+              includeBlank="— none / standalone —"
+              hint="pre-fills licensing from the database's defaults"
+              options={refDbs.map((d) => ({ value: d.id, label: d.name }))}
+            />
+          )}
           <div className="row">
             <Field label="Authors" name="authors" />
             <Select

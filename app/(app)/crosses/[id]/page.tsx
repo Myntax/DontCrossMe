@@ -3,7 +3,7 @@ import { prisma } from "@db/client";
 import { assessCross } from "@/lib/suggestions";
 import { appConfig } from "@/lib/config";
 import { addPollination, addPodSet, addIntervention } from "@/lib/actions";
-import { INTERVENTION_TYPES, INTERVENTION_OUTCOMES, POLLINATION_METHODS } from "@engine/enums";
+import { INTERVENTION_OUTCOMES, POLLINATION_METHODS } from "@engine/enums";
 import {
   Card,
   Field,
@@ -44,6 +44,10 @@ export default async function CrossDetail({
     seedTaxonId && pollenTaxonId ? await assessCross(seedTaxonId, pollenTaxonId) : null;
 
   const growers = await prisma.grower.findMany({ orderBy: { name: "asc" } });
+  const techniques = await prisma.interventionTechnique.findMany({
+    where: { isActive: true },
+    orderBy: { label: "asc" },
+  });
 
   return (
     <div>
@@ -199,7 +203,8 @@ export default async function CrossDetail({
               label="Technique"
               name="type"
               required
-              options={enumOptions(INTERVENTION_TYPES)}
+              includeBlank="— select technique —"
+              options={techniques.map((t) => ({ value: t.key, label: t.label }))}
             />
             <Select
               label="Outcome"

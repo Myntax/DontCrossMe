@@ -6,8 +6,8 @@ import type { OutcomeSummary } from "./evidence";
 import { countToConfidence } from "./evidence";
 import type { Confidence, CrossType, InterventionType } from "./enums";
 
-interface CatalogEntry {
-  type: InterventionType;
+export interface CatalogEntry {
+  type: InterventionType | string;
   label: string;
   description: string;
   /// cross types this technique is typically relevant to
@@ -18,7 +18,12 @@ interface CatalogEntry {
   basePriority: number;
 }
 
-export const INTERVENTION_CATALOG: CatalogEntry[] = [
+/**
+ * Built-in techniques. The catalog is now data-driven: this list seeds the
+ * database and serves as the default when no catalog is supplied, but new
+ * techniques can be added at runtime and passed into `suggestInterventions`.
+ */
+export const DEFAULT_INTERVENTION_CATALOG: CatalogEntry[] = [
   {
     type: "GREEN_POD_FLASK",
     label: "Green-pod (embryo) flasking",
@@ -111,8 +116,11 @@ export const INTERVENTION_CATALOG: CatalogEntry[] = [
   },
 ];
 
+/** @deprecated Use DEFAULT_INTERVENTION_CATALOG. Kept as an alias. */
+export const INTERVENTION_CATALOG = DEFAULT_INTERVENTION_CATALOG;
+
 export interface InterventionSuggestion {
-  type: InterventionType;
+  type: InterventionType | string;
   label: string;
   description: string;
   /// final rank score (higher first)
@@ -126,22 +134,26 @@ export interface InterventionSuggestion {
 export interface SuggestInterventionsInput {
   crossType: CrossType;
   viabilityScore: number;
-  /// observed outcomes per intervention type from this program
-  history?: Partial<Record<InterventionType, OutcomeSummary>>;
+  /// observed outcomes per intervention type (or custom technique key)
+  history?: Record<string, OutcomeSummary>;
 }
 
 /**
  * Rank interventions for a given cross context. Techniques that have actually
  * worked here are boosted; techniques that have repeatedly failed are damped —
  * this is the intervention side of "learning over time".
+ *
+ * @param catalog the technique catalog to draw from (defaults to the built-ins);
+ *   pass a DB-loaded catalog to include user-added techniques.
  */
 export function suggestInterventions(
   input: SuggestInterventionsInput,
+  catalog: CatalogEntry[] = DEFAULT_INTERVENTION_CATALOG,
 ): InterventionSuggestion[] {
   const { crossType, viabilityScore, history = {} } = input;
   const out: InterventionSuggestion[] = [];
 
-  for (const entry of INTERVENTION_CATALOG) {
+  for (const entry of catalog) {
     if (!entry.appliesTo.includes(crossType)) continue;
     if (viabilityScore > entry.maxViability) continue;
 

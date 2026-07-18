@@ -5,14 +5,31 @@
 import type { PrismaClient, Taxon } from "@prisma/client";
 import {
   summarizeOutcomes,
+  resolveAccepted,
+  type AcceptedResolvable,
   type OutcomeRecord,
   type OutcomeSummary,
   type TaxonInfo,
   type CultureRecord,
   type Precedent,
   type InterventionType,
+  type CatalogEntry,
+  type CrossType,
 } from "@engine/index";
+import { parseStringArray } from "./json";
 import { prisma as defaultPrisma } from "./client";
+
+/** Load a lightweight map of every taxon's accepted-status redirect (one query). */
+export async function loadAcceptedMap(
+  prisma: PrismaClient = defaultPrisma,
+): Promise<Map<string, AcceptedResolvable>> {
+  const taxa = await prisma.taxon.findMany({
+    select: { id: true, status: true, acceptedTaxonId: true },
+  });
+  return new Map(
+    taxa.map((t) => [t.id, { status: t.status, acceptedTaxonId: t.acceptedTaxonId }]),
+  );
+}
 
 /** Extract a numeric ploidy multiple from a free-text ploidy string (e.g. "2n=3x=60" -> 3). */
 export function parsePloidyLevel(ploidy: string | null | undefined): number | undefined {
@@ -21,12 +38,46 @@ export function parsePloidyLevel(ploidy: string | null | undefined): number | un
   return m ? Number(m[1]) : undefined;
 }
 
-/** Walk up the taxon hierarchy to find the containing genus and subtribe ids. */
+/**
+ * Follow a taxon's synonym/deprecated redirect to its currently accepted taxon.
+ * Cycle- and depth-guarded. Keeps analysis correct after reclassification: data
+ * logged under an old name still resolves to the accepted taxon.
+ */
+export async function resolveAcceptedTaxonId(
+  taxonId: string,
+  prisma: PrismaClient = defaultPrisma,
+): Promise<string> {
+  const seen = new Set<string>();
+  let current = taxonId;
+  let guard = 0;
+  while (!seen.has(current) && guard < 20) {
+    seen.add(current);
+    guard += 1;
+    const t = await prisma.taxon.findUnique({
+      where: { id: current },
+      select: { status: true, acceptedTaxonId: true },
+    });
+    if (!t) return current;
+    if ((t.status === "SYNONYM" || t.status === "DEPRECATED") && t.acceptedTaxonId) {
+      current = t.acceptedTaxonId;
+      continue;
+    }
+    return current;
+  }
+  return current;
+}
+
+/**
+ * Build the engine's TaxonInfo for a taxon, resolving through any
+ * synonym/deprecated redirect first so the accepted taxon's lineage and ploidy
+ * are used. Walks up the hierarchy to find the containing genus and subtribe.
+ */
 export async function buildTaxonInfo(
   taxonId: string,
   prisma: PrismaClient = defaultPrisma,
 ): Promise<TaxonInfo | null> {
-  const taxon = await prisma.taxon.findUnique({ where: { id: taxonId } });
+  const acceptedId = await resolveAcceptedTaxonId(taxonId, prisma);
+  const taxon = await prisma.taxon.findUnique({ where: { id: acceptedId } });
   if (!taxon) return null;
 
   let genusId: string | undefined =
@@ -99,14 +150,21 @@ export async function getPairOutcomes(
       pollinations: true,
     },
   });
+  // Resolve everything through reclassification so a pairing still matches even
+  // if one parent has since been synonymized.
+  const accepted = await loadAcceptedMap(prisma);
+  const wantSeed = resolveAccepted(accepted, seedTaxonId);
+  const wantPollen = resolveAccepted(accepted, pollenTaxonId);
   const records: OutcomeRecord[] = [];
   for (const c of crosses) {
-    const seed = c.seedParentPlant?.taxonId ?? c.seedParentTaxonId ?? undefined;
-    const pollen =
+    const seedRaw = c.seedParentPlant?.taxonId ?? c.seedParentTaxonId ?? undefined;
+    const pollenRaw =
       c.pollenParentPlant?.taxonId ?? c.pollenParentTaxonId ?? undefined;
+    const seed = seedRaw ? resolveAccepted(accepted, seedRaw) : undefined;
+    const pollen = pollenRaw ? resolveAccepted(accepted, pollenRaw) : undefined;
     const matches =
-      (seed === seedTaxonId && pollen === pollenTaxonId) ||
-      (seed === pollenTaxonId && pollen === seedTaxonId);
+      (seed === wantSeed && pollen === wantPollen) ||
+      (seed === wantPollen && pollen === wantSeed);
     if (!matches) continue;
     const podSet = c.podSets.some((p) => p.set);
     const pollSuccess = c.pollinations.some((p) => p.success === true)
@@ -199,6 +257,11 @@ export async function getCultureRecords(
     include: { taxon: true },
   });
 
+  // Resolve observations through reclassification so records logged under an old
+  // (now-synonym) name still count toward the accepted taxon.
+  const accepted = await loadAcceptedMap(prisma);
+  const target = resolveAccepted(accepted, taxonId);
+
   // Precompute genus for taxa we encounter.
   const genusCache = new Map<string, string | null>();
   const genusOf = async (tid: string): Promise<string | null> => {
@@ -211,10 +274,11 @@ export async function getCultureRecords(
 
   const records: CultureRecord[] = [];
   for (const o of observations) {
-    const tid = o.taxonId ?? o.taxon?.id ?? null;
-    if (!tid) continue;
+    const rawTid = o.taxonId ?? o.taxon?.id ?? null;
+    if (!rawTid) continue;
+    const tid = resolveAccepted(accepted, rawTid);
     const g = await genusOf(tid);
-    const relevant = tid === taxonId || (genusId != null && g === genusId);
+    const relevant = tid === target || (genusId != null && g === genusId);
     if (!relevant) continue;
     records.push({
       id: o.id,
@@ -227,4 +291,26 @@ export async function getCultureRecords(
     });
   }
   return records;
+}
+
+/**
+ * Load the active intervention catalog from the database (built-ins + any
+ * user-added techniques) in the shape the engine expects. Falls back to the
+ * engine's built-in default when the table is empty (e.g. before seeding).
+ */
+export async function getInterventionCatalog(
+  prisma: PrismaClient = defaultPrisma,
+): Promise<CatalogEntry[] | undefined> {
+  const rows = await prisma.interventionTechnique.findMany({
+    where: { isActive: true },
+  });
+  if (rows.length === 0) return undefined; // let the engine use its defaults
+  return rows.map((r) => ({
+    type: r.key,
+    label: r.label,
+    description: r.description,
+    appliesTo: parseStringArray(r.appliesToJson) as CrossType[],
+    maxViability: r.maxViability,
+    basePriority: r.basePriority,
+  }));
 }

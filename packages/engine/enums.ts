@@ -131,3 +131,47 @@ export const TAXON_SCOPES = ["SPECIES", "GENUS", "SUBTRIBE", "GENERAL"] as const
 
 export const INTAKE_KINDS = ["OBSERVATION", "CROSS", "PLANT", "NOTE"] as const;
 export const INTAKE_STATUSES = ["PENDING", "APPROVED", "REJECTED"] as const;
+
+// --- Taxonomic realism & extensibility -------------------------------------
+
+export const TAXON_STATUSES = ["ACCEPTED", "SYNONYM", "DEPRECATED"] as const;
+export type TaxonStatus = (typeof TAXON_STATUSES)[number];
+
+export const TAXON_NAME_TYPES = [
+  "ACCEPTED_SCIENTIFIC",
+  "SYNONYM_SCIENTIFIC",
+  "BASIONYM",
+  "HORTICULTURAL",
+  "TRADE",
+  "COMMON",
+] as const;
+export type TaxonNameType = (typeof TAXON_NAME_TYPES)[number];
+
+export const NOTHO_FORMULA_TYPES = [
+  "CONDENSED_PORTMANTEAU",
+  "CONDENSED_HONORIFIC",
+] as const;
+export type NothoFormulaType = (typeof NOTHO_FORMULA_TYPES)[number];
+
+export const TAXON_REVISION_ACTIONS = [
+  "CREATE",
+  "RENAME",
+  "MOVE",
+  "RECLASSIFY_RANK",
+  "MARK_SYNONYM",
+  "MERGE",
+  "SPLIT",
+  "DEPRECATE",
+  "RESTORE",
+] as const;
+export type TaxonRevisionAction = (typeof TAXON_REVISION_ACTIONS)[number];
+
+export const REFERENCE_DB_KINDS = [
+  "TAXONOMY",
+  "CULTURE",
+  "REGISTER",
+  "LITERATURE",
+  "OTHER",
+] as const;
+
+export const REFERENCE_DB_STATUSES = ["EVALUATING", "ACTIVE", "RETIRED"] as const;

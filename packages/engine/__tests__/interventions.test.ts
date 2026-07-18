@@ -47,6 +47,26 @@ describe("suggestInterventions", () => {
     }
   });
 
+  it("honors a custom catalog (user-added techniques)", () => {
+    const custom = [
+      {
+        type: "CUSTOM_CO2_ENRICHMENT",
+        label: "CO₂ enrichment",
+        description: "Raise ambient CO₂ during capsule development.",
+        appliesTo: ["INTERGENERIC" as const],
+        maxViability: 60,
+        basePriority: 9,
+      },
+    ];
+    const s = suggestInterventions(
+      { crossType: "INTERGENERIC", viabilityScore: 30 },
+      custom,
+    );
+    expect(s.map((x) => x.type)).toEqual(["CUSTOM_CO2_ENRICHMENT"]);
+    // built-ins are NOT included when a custom catalog is supplied
+    expect(s.map((x) => x.type)).not.toContain("EMBRYO_RESCUE");
+  });
+
   it("attaches observed evidence when history is present", () => {
     const hist = summarizeOutcomes([
       { id: "a", success: true },

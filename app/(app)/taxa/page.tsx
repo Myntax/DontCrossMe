@@ -37,6 +37,7 @@ export default async function TaxaPage({
               <tr>
                 <th>Name</th>
                 <th>Rank</th>
+                <th>Status</th>
                 <th>Parent</th>
                 <th>2n</th>
                 <th>Hybrid?</th>
@@ -46,10 +47,23 @@ export default async function TaxaPage({
               {taxa.map((t) => (
                 <tr key={t.id}>
                   <td>
-                    <em>{t.name}</em>
+                    <a href={`/taxa/${t.id}`}>
+                      <em>{t.name}</em>
+                    </a>
+                    {t.needsReview && (
+                      <> <span className="badge MEDIUM">review</span></>
+                    )}
                   </td>
                   <td>
                     <span className="badge">{t.rank}</span>
+                    {t.formulaAbbreviation ? (
+                      <span className="muted"> {t.formulaAbbreviation}</span>
+                    ) : null}
+                  </td>
+                  <td>
+                    <span className={`badge ${t.status === "ACCEPTED" ? "ok" : "MEDIUM"}`}>
+                      {t.status}
+                    </span>
                   </td>
                   <td className="muted">{t.parent?.name || "—"}</td>
                   <td>{t.chromosomeCount ?? "—"}</td>
