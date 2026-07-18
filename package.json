@@ -17,7 +17,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset --force",
     "export": "tsx scripts/export.ts",
-    "import": "tsx scripts/import.ts"
+    "import": "tsx scripts/import.ts",
+    "import-taxa": "tsx scripts/import-taxa.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

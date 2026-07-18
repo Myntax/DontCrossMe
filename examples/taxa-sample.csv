@@ -1,0 +1,10 @@
+taxonID,scientificName,taxonRank,scientificNameAuthorship,taxonomicStatus,acceptedNameUsageID,parentNameUsage,genus,family,chromosomeCount
+100,Orchidaceae,Family,Juss.,Accepted,,,,,
+110,Vandeae,Tribe,,Accepted,,Orchidaceae,,Orchidaceae,
+111,Aeridinae,Subtribe,,Accepted,,Vandeae,,Orchidaceae,
+120,Vanda,Genus,Jones ex R.Br.,Accepted,,Aeridinae,,Orchidaceae,38
+121,Vanda falcata,Species,(Thunb.) Beer,Accepted,,,Vanda,Orchidaceae,38
+122,Neofinetia falcata,Species,(Thunb.) Hu,Synonym,121,,Neofinetia,Orchidaceae,
+123,Vanda coerulea,Species,Griff. ex Lindl.,Accepted,,,Vanda,Orchidaceae,38
+130,Aerides,Genus,Lour.,Accepted,,Aeridinae,,Orchidaceae,38
+131,Aerides odorata,Species,Lour.,Accepted,,,Aerides,Orchidaceae,38

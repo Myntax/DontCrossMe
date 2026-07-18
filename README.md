@@ -71,6 +71,7 @@ the suggestions produce meaningful output immediately.
 | `npm run db:seed` | Re-run the seed (idempotent) |
 | `npm run export` | Write a full JSON export to `exports/` |
 | `npm run import -- <file>` | Restore an export into an empty DB |
+| `npm run import-taxa -- --file <csv>` | Bulk-import taxonomy from a sanctioned CSV/Darwin-Core export ([docs](docs/IMPORT.md)) |
 
 ## Forking / self-hosting
 
@@ -80,7 +81,10 @@ the suggestions produce meaningful output immediately.
 - Branding is config-driven (`SOCIETY_NAME`); there are no hard-coded society specifics.
 - A nullable `organizationId` is present on the core tables from day one, so growing into
   a multi-tenant platform later is a change of scope, not a rewrite.
-- `Dockerfile` + `docker-compose.yml` are included for containerized self-hosting.
+- `Dockerfile` + `docker-compose.yml` are included for containerized self-hosting —
+  see [`docs/DEPLOY.md`](docs/DEPLOY.md).
+- Load the real taxonomy from a sanctioned CSV/Darwin-Core export — see
+  [`docs/IMPORT.md`](docs/IMPORT.md).
 
 ## Tech
 
