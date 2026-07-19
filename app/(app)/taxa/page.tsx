@@ -1,24 +1,30 @@
 import { prisma } from "@db/client";
-import { createTaxon } from "@/lib/actions";
+import { createTaxon, importTaxaCsv } from "@/lib/actions";
 import { TAXON_RANKS } from "@engine/enums";
 import {
   Card,
   Field,
   Select,
+  TextArea,
+  Checkbox,
   ErrorBanner,
+  OkBanner,
   enumOptions,
 } from "@/components/ui";
 
 export default async function TaxaPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; import?: string }>;
 }) {
-  const { error } = await searchParams;
-  const taxa = await prisma.taxon.findMany({
-    orderBy: [{ rank: "asc" }, { name: "asc" }],
-    include: { parent: true },
-  });
+  const { error, import: importMsg } = await searchParams;
+  const [taxa, refDbs] = await Promise.all([
+    prisma.taxon.findMany({
+      orderBy: [{ rank: "asc" }, { name: "asc" }],
+      include: { parent: true },
+    }),
+    prisma.referenceDatabase.findMany({ orderBy: { name: "asc" } }),
+  ]);
 
   return (
     <div>
@@ -29,6 +35,7 @@ export default async function TaxaPage({
         cross-viability baseline, so fill in genus/subtribe where you can.
       </p>
       <ErrorBanner error={error} />
+      {importMsg && <OkBanner>{importMsg}</OkBanner>}
 
       <Card title={`${taxa.length} taxa`}>
         <div className="table-wrap">
@@ -110,6 +117,34 @@ export default async function TaxaPage({
             <Field label="Native range" name="nativeRange" />
           </div>
           <button type="submit">Add taxon</button>
+        </form>
+      </Card>
+
+      <Card title="Import taxa (CSV)">
+        <p className="muted" style={{ marginTop: 0 }}>
+          Paste a sanctioned CSV/Darwin-Core export (columns auto-detected). Synonyms
+          link to their accepted names; re-importing updates in place. For large files
+          use the CLI (<span className="mono">npm run import-taxa</span>) — see{" "}
+          <span className="mono">docs/IMPORT.md</span>. Only import data you&apos;re
+          licensed to use.
+        </p>
+        <form className="stack" action={importTaxaCsv}>
+          <TextArea
+            label="CSV"
+            name="csv"
+            required
+            hint="first row = headers, e.g. scientificName,taxonRank,taxonomicStatus,acceptedNameUsageID,genus"
+          />
+          {refDbs.length > 0 && (
+            <Select
+              label="Attribute to reference database"
+              name="referenceDatabaseId"
+              includeBlank="— none —"
+              options={refDbs.map((d) => ({ value: d.id, label: d.name }))}
+            />
+          )}
+          <Checkbox label="Dry run (report only, write nothing)" name="dryRun" defaultChecked />
+          <button type="submit">Import</button>
         </form>
       </Card>
     </div>

@@ -6,6 +6,7 @@ import { prisma } from "@db/client";
 import { buildTaxonInfo } from "@db/evidence-adapter";
 import { classifyCross } from "@engine/index";
 import { computeAiEligibility } from "@ai/index";
+import { importTaxaFromText } from "@db/taxon-import";
 import { getCurrentUser, canEdit, canReview, login, logout } from "./auth";
 import {
   renameTaxon,
@@ -516,6 +517,34 @@ export async function splitTaxonAction(formData: FormData) {
     if (e instanceof Error && e.message.startsWith("NEXT_REDIRECT")) throw e;
     back(`/taxa/${sourceId}`, e instanceof Error ? e.message : "Split failed");
   }
+}
+
+// --- Bulk taxonomy import (paste-CSV convenience; CLI handles large files) --
+
+export async function importTaxaCsv(formData: FormData) {
+  await requireEditor();
+  const csv = String(formData.get("csv") ?? "").trim();
+  if (!csv) back("/taxa", "Paste some CSV first");
+  const referenceDatabaseId = (formData.get("referenceDatabaseId") as string) || undefined;
+  const dryRun = formData.get("dryRun") === "true";
+
+  let summary: string;
+  try {
+    const { plan, result } = await importTaxaFromText(csv, {
+      dryRun,
+      organizationId: "org_default",
+      referenceDatabaseId,
+    });
+    const head = dryRun ? "Dry run — no changes written." : "Import applied.";
+    summary =
+      `${head} created ${result.created}, updated ${result.updated}, ` +
+      `skipped ${plan.stats.skipped}, synonyms ${plan.stats.synonyms}, ` +
+      `parents linked ${result.parentsLinked}, unresolved ${result.unresolvedRefs.length}.`;
+  } catch (e) {
+    back("/taxa", e instanceof Error ? e.message : "Import failed");
+  }
+  revalidatePath("/taxa");
+  redirect(`/taxa?import=${encodeURIComponent(summary!)}`);
 }
 
 // --- Nothogenus components -------------------------------------------------
